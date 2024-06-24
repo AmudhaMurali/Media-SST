@@ -1,0 +1,306 @@
+<pipe xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="https://whampipe.wh.tripadvisor.com/xsds/0.02/" xsi:schemaLocation="https://whampipe.wh.tripadvisor.com/xsds/0.02/ https://whampipe.wh.tripadvisor.com/xsds/0.02/whampipe-0.02.xsd">
+    <declaration>
+        <name>article_sponsorships</name>
+        <group>ta-analytics-dev</group>
+        <description>pipeline for (sponsored) articles reporting</description>
+        <success-emails>bishen@tripadvisor.com,media-analytics@tripadvisor.com,blackhole@tripadvisor.com</success-emails>
+        <failure-emails>bishen@tripadvisor.com,media-analytics@tripadvisor.com,blackhole@tripadvisor.com</failure-emails>
+        <tags>corex</tags>
+        <schedule-display>daily</schedule-display>
+        <engine-defaults>
+            <spark>
+                <param name="--driver-memory" value="4g"/>
+                <param name="--executor-cores" value="4"/>
+                <param name="--executor-memory " value="12g"/>
+                <conf-param name="spark.shuffle.service.enabled" value="true"/>
+                <conf-param name="spark.sql.orc.impl" value="native"/>
+            </spark>
+        </engine-defaults>
+    </declaration>
+    <connection>
+        <snowflake id="snowflake" database="{{snow_database}}"  role="{{snowflake_role}}" credential="ta-snowflake"/>
+        <postgres id="sponsorship-manager-rws" queue="sponsorship-manager-rws" credential="sponsorship-manager-rws" />
+
+    </connection>
+    <variables>
+        <variable id="snow_database" description="target database to write to on snowflake">
+            <production>display_ads</production>
+            <private>user_scratch</private>
+        </variable>
+        <variable id="pipeline_schema_sf" description="target schema to write to on snowflake">
+            <production>sales</production>
+            <private>x_{{USER}}</private>
+        </variable>
+        <variable id="hive_pipeline_schema" description="target schema to write to on hive">
+            <production>analytics</production>
+            <private>x_{{USER}}</private>
+        </variable>
+        <variable id="snowflake_role" description="the role to use on snowflake">
+            <production>analytics_role</production>
+            <private>analytics_role</private>
+        </variable>
+        <variable id="pipeline_schema" description="target schema to write to on leo">
+            <production>analytics</production>
+            <private>x_{{USER}}</private>
+        </variable>
+
+        <variable id="pipeline_staging_schema" description="target schema to write to on sf">
+            <production>sales</production>
+            <private>x_{{USER}}</private>
+        </variable>
+
+    </variables>
+
+    <flow>
+
+        <extract-from-rdbms
+                id="import_articles_data_to_sf"
+                source-table-name="articles"
+                source-connection="sponsorship-manager-rws"
+                split-column="id"
+                partition-strategy="single-partition"
+                target-connection="snowflake"
+                target-schema-name="{{pipeline_staging_schema}}"
+                target-table-name="articles"
+        >
+        </extract-from-rdbms>
+
+        <extract-from-rdbms
+                id="import_sponsorship_campaigns_data_to_sf"
+                source-table-name="campaigns"
+                source-connection="sponsorship-manager-rws"
+                split-column="id"
+                partition-strategy="single-partition"
+                target-connection="snowflake"
+                target-schema-name="{{pipeline_staging_schema}}"
+                target-table-name="campaigns"
+        >
+        </extract-from-rdbms>
+
+        <extract-from-rdbms
+                id="import_sponsorship_sponsors_data_to_sf"
+                source-table-name="sponsors"
+                source-connection="sponsorship-manager-rws"
+                split-column="id"
+                partition-strategy="single-partition"
+                target-connection="snowflake"
+                target-schema-name="{{pipeline_staging_schema}}"
+                target-table-name="sponsors"
+        >
+        </extract-from-rdbms>
+
+        <extract-from-rdbms
+                id="import_sponsorship_profiles_data_to_sf"
+                source-table-name="profiles"
+                source-connection="sponsorship-manager-rws"
+                split-column="id"
+                partition-strategy="single-partition"
+                target-connection="snowflake"
+                target-schema-name="{{pipeline_staging_schema}}"
+                target-table-name="profiles"
+        >
+        </extract-from-rdbms>
+
+         <snow-sql id="copy_to_partition" connection-ref="snowflake" path-to-sql-file="spock_articles.sql" path-to-setup-ddl="spock_articles.hive.ddl">
+            <requires>
+                <task ref="import_articles_data_to_sf"/>
+                <task ref="import_sponsorship_campaigns_data_to_sf"/>
+                <task ref="import_sponsorship_sponsors_data_to_sf"/>
+                <task ref="import_sponsorship_profiles_data_to_sf"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="articles_sponsored_profile_key" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="sponsored_articles" connection-ref="snowflake"
+                    path-to-sql-file="sponsored_articles.sql"
+                    path-to-setup-ddl="sponsored_articles.ddl">
+             <requires>
+                <task ref="copy_to_partition"/>
+            </requires>
+             <on-success>
+                 <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="sponsored_articles" format="ds"/>
+             </on-success>
+        </snow-sql>
+
+        <snow-sql id="article_title" connection-ref="snowflake"
+                    path-to-sql-file="article_title.sql"
+                    path-to-setup-ddl="article_title.ddl">
+             <on-success>
+                 <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="article_title" format="ds"/>
+             </on-success>
+        </snow-sql>
+
+        <snow-sql id="sponsored_articles_dwell_time_unique" connection-ref="snowflake"
+                    path-to-sql-file="sponsored_articles_dwell_time_unique.sql"
+                    path-to-setup-ddl="sponsored_articles_dwell_time_unique.ddl">
+             <requires>
+                 <stamp connection-ref="snowflake" instance="user_tracking" namespace="public" name="a_lookback_blessed_joined" format="ds"/>
+                 <stamp connection-ref="snowflake" instance="WEB_PLATFORM" namespace="raw" name="rum_page_loads" format="dsendhh"/>
+                 <stamp connection-ref="snowflake" instance="WEB_PLATFORM" namespace="raw" name="rum_navigations" format="dsendhh"/>
+                 <task ref="sponsored_articles"/>
+                 <task ref="article_title"/>
+             </requires>
+             <on-success>
+                 <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="sponsored_articles_dwell_time_unique" format="ds"/>
+             </on-success>
+        </snow-sql>
+
+        <snow-sql id="article_order_id_mapping" connection-ref="snowflake"
+                  path-to-sql-file="article_order_id_mapping.sql"
+                  path-to-setup-ddl="article_order_id_mapping.ddl">
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="article_order_id_mapping" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="article_order_unique_id_mapping" connection-ref="snowflake"
+                  path-to-sql-file="article_order_unique_id_mapping.sql"
+                  path-to-setup-ddl="article_order_unique_id_mapping.ddl">
+            <requires>
+                <task ref="article_order_id_mapping"/>
+            </requires>
+            <!-- <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="article_order_unique_id_mapping" format="ds"/>
+            </on-success> -->
+        </snow-sql>
+
+
+        <snow-sql id="sponsored_articles_dwell_time_agg" connection-ref="snowflake"
+                  path-to-sql-file="sponsored_articles_dwell_time_agg.sql"
+                  path-to-setup-ddl="sponsored_articles_dwell_time_agg.ddl">
+            <requires>
+                <!--<stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="op1_line_items" format="ds"/>-->
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="pio" name="pio_op1_data_shim" format="ds"/>
+                <task ref="sponsored_articles_dwell_time_unique"/>
+                <task ref="article_order_unique_id_mapping"/>
+
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="sponsored_articles_dwell_time_agg" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+
+        <snow-sql id="article_lookback_pageview" connection-ref="snowflake"
+                  path-to-sql-file="article_lookback_pageview.sql"
+                  path-to-setup-ddl="article_lookback_pageview.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="anm" name="a_lookback_blessed_joined_only_pv" format="ds"/>
+                <stamp connection-ref="snowflake" instance="USER_TRACKING" namespace="public" name="user_impressions" format="dsendhh"/>
+                <stamp connection-ref="snowflake" instance="user_tracking" namespace="public" name="user_interactions" format="dsendhh"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="article_lookback_pageview" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="article_reporting" connection-ref="snowflake"
+                  path-to-sql-file="article_reporting.sql"
+                  path-to-setup-ddl="article_reporting.ddl">
+            <requires>
+                <!--<stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="op1_line_items" format="ds"/>-->
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="rust" name="a_unique_users" format="ds"/>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="pio" name="pio_op1_data_shim" format="ds"/>
+                <task ref="article_lookback_pageview"/>
+                <task ref="sponsored_articles"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="article_reporting" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="article_enhance_inter" connection-ref="snowflake"
+                  path-to-sql-file="article_enhance_inter.sql"
+                  path-to-setup-ddl="article_enhance_inter.ddl">
+            <requires>
+                <!--<stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="op1_line_items" format="ds"/>-->
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="pio" name="pio_op1_data_shim" format="ds"/>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="rust" name="a_unique_users" format="ds"/>
+                <task ref="article_lookback_pageview"/>
+                <task ref="article_order_id_mapping"/>
+                <task ref="article_title"/>
+                <task ref="sponsored_articles"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="article_enhance_inter" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="article_shelf" connection-ref="snowflake"
+                  path-to-sql-file="article_shelf.sql"
+                  path-to-setup-ddl="article_shelf.ddl">
+            <requires>
+                <!--<stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="op1_line_items" format="ds"/>-->
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="pio" name="pio_op1_data_shim" format="ds"/>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="rust" name="a_unique_users" format="ds"/>
+<!--                <task ref="to_sf_sponsored_articles"/>-->
+                <task ref="article_lookback_pageview"/>
+                <task ref="article_title"/>
+                <task ref="sponsored_articles"/>
+                <task ref="article_order_id_mapping"/>
+<!--                <task ref="to_sf_article_title"/>-->
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="article_shelf" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+                <snow-sql id="sponsored_articles_dwell_time_unique_mcid" connection-ref="snowflake"
+                    path-to-sql-file="sponsored_articles_dwell_time_unique_mcid.sql"
+                    path-to-setup-ddl="sponsored_articles_dwell_time_unique_mcid.ddl">
+             <requires>
+                 <stamp connection-ref="snowflake" instance="user_tracking" namespace="public" name="a_lookback_blessed_joined" format="ds"/>
+                 <stamp connection-ref="snowflake" instance="WEB_PLATFORM" namespace="raw" name="rum_page_loads" format="dsendhh"/>
+                 <stamp connection-ref="snowflake" instance="WEB_PLATFORM" namespace="raw" name="rum_navigations" format="dsendhh"/>
+                 <task ref="sponsored_articles"/>
+                 <task ref="article_title"/>
+             </requires>
+             <on-success>
+                 <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="sponsored_articles_dwell_time_unique_mcid" format="ds"/>
+             </on-success>
+        </snow-sql>
+
+        <snow-sql id="sponsored_articles_dwell_time_agg_mcid" connection-ref="snowflake"
+                  path-to-sql-file="sponsored_articles_dwell_time_agg_mcid.sql"
+                  path-to-setup-ddl="sponsored_articles_dwell_time_agg_mcid.ddl">
+            <requires>
+                <!--<stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="op1_line_items" format="ds"/>-->
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="pio" name="pio_op1_data_shim" format="ds"/>
+                <task ref="sponsored_articles_dwell_time_unique_mcid"/>
+                <task ref="article_order_unique_id_mapping"/>
+
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="sponsored_articles_dwell_time_agg_mcid" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="view_article" connection-ref="snowflake"
+                  path-to-sql-file="view_article.sql">
+            <requires>
+                <task ref="sponsored_articles_dwell_time_agg"/>
+                <task ref="article_enhance_inter"/>
+                <task ref="article_shelf"/>
+            </requires>
+        </snow-sql>
+
+
+
+        <email id="email_article_sponsored_update">
+            <requires>
+                <task ref="sponsored_articles_dwell_time_agg_mcid"/>
+                <task ref="article_shelf"/>
+                <task ref="article_enhance_inter"/>
+                <task ref="view_article"/>
+            </requires>
+            <content>
+                <subject>email_article_sponsored_update</subject>
+                <body>Daily run successful - {{CURRENT_DAY}}</body>
+            </content>
+        </email>
+
+
+    </flow>
+</pipe>
