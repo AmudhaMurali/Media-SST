@@ -1,0 +1,308 @@
+<!-- This is designed to serve as a pipeline that can load data from woodsy to whampipe -->
+
+
+<pipe xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns="https://whampipe.wh.tripadvisor.com/xsds/0.02/"
+      xsi:schemaLocation="https://whampipe.wh.tripadvisor.com/xsds/0.02/ https://whampipe.wh.tripadvisor.com/xsds/0.02/whampipe-0.02.xsd">
+    <declaration>
+        <name>brand_channel_sponsorship</name>
+        <group>ta-analytics-dev</group>
+        <description>Pipeline for brand channel sponsorships</description>
+        <success-emails>media-analytics@tripadvisor.com,blackhole@tripadvisor.com</success-emails>
+        <failure-emails>bishen@tripadvisor.com,media-analytics@tripadvisor.com,blackhole@tripadvisor.com</failure-emails>
+        <tags>whampipe, corex</tags>
+        <schedule-display>daily</schedule-display>
+    </declaration>
+
+    <connection>
+        <snowflake id="snowflake" database="{{snow_database}}" role="{{snowflake_role}}" credential="ta-snowflake"/>
+    </connection>
+
+    <variables>
+
+        <variable id="pipeline_schema" description="target schema to write to">
+            <production>ad_analytics</production>
+            <private>x_{{USER}}</private>
+        </variable>
+
+        <variable id="snow_database">
+            <production>display_ads</production>
+            <private>user_scratch</private>
+        </variable>
+
+        <variable id="pipeline_schema_sf" description="target schema to write to">
+            <production>sales</production>
+            <private>x_{{USER}}</private>
+        </variable>
+
+        <variable id="snowflake_role" description="the role to use on snowflake">
+            <production>analytics_role</production>
+            <private>analytics_role</private>
+        </variable>
+
+        <date-variable id="start_dt_m30" from="EXECUTION" add="-P30D" format="yyyy-MM-dd" description="30_days_prior"/>
+
+    </variables>
+
+    <flow>
+        <snow-sql id="virtual_geo_location" connection-ref="snowflake"
+                  path-to-sql-file="virtual_geo_location.sql"
+                  path-to-setup-ddl="virtual_geo_location.ddl">
+            <requires>
+<!--                the below table does not have ds column and it not stamped-->
+<!--                    <stamp connection-ref="snowflake" instance="RIO_SF" namespace="hotels_demand" name="t_virtual_region" format="dsnodashes"> <offset duration="P1D"/> </stamp>-->
+                <stamp connection-ref="snowflake" instance="rio_sf" namespace="public" name="t_locationpaths" format="dsnodashes"> <offset duration="P1D"/> </stamp>
+                <stamp connection-ref="snowflake" instance="rio_sf" namespace="public" name="t_location" format="dsnodashes"> <offset duration="P1D"/> </stamp>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="public" name="t_placetype" format="dsnodashes"> <offset duration="P1D"/> </stamp>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="virtual_geo_location" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="bc_dwell_time_unique" connection-ref="snowflake"
+                  path-to-sql-file="bc_dwell_time_unique.sql"
+                  path-to-setup-ddl="bc_dwell_time_unique.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="web_platform" namespace="public" name="rum_page_loads" format="dsendhh"> <offset duration="P1D"/> </stamp>
+                <stamp connection-ref="snowflake" instance="web_platform" namespace="public" name="rum_metrics" format="dsendhh"> <offset duration="P1D"/> </stamp>
+                <stamp connection-ref="snowflake" instance="web_platform" namespace="public" name="rum_navigations" format="dsendhh"> <offset duration="P1D"/> </stamp>
+                <stamp connection-ref="snowflake" instance="user_tracking" namespace="public" name="a_lookback_blessed_joined" format="dsnodashes"> <offset duration="P1D"/> </stamp>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="bc_dwell_time_unique" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+
+
+        <snow-sql connection-ref="snowflake"
+                  id="bc_shelf_spotlight_imps"
+                  path-to-setup-ddl="bc_shelf_spotlight_imps.ddl"
+                  path-to-sql-file="bc_shelf_spotlight_imps.sql">
+            <requires>
+                <!-- spock table only has ds starting from '2022-07-20' do not backfill prior to this date -->
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS_ENGINEERING" namespace="CONTENT_SPONSORSHIPS" name="t_spock_brandchannels" format="ds"/>
+                <stamp connection-ref="snowflake" instance="rio_sf" namespace="cx_analytics" name="t_mixer_impressions_new" format="ds"/>
+                <stamp connection-ref="snowflake" instance="USER_TRACKING" namespace="PUBLIC" name="F_USER_INTERACTION_DEPRECATED" format="dsendhh"/>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="rust" name="a_unique_users" format="ds"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="bc_shelf_spotlight_imps" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="bc_shelf_spotlight_inter" connection-ref="snowflake"
+                  path-to-sql-file="bc_shelf_spotlight_inter.sql"
+                  path-to-setup-ddl="bc_shelf_spotlight_inter.ddl">
+            <requires>
+                <!-- REMOVE FOR BACKFILL -->
+                <stamp connection-ref="snowflake" instance="USER_TRACKING" namespace="PUBLIC" name="F_USER_INTERACTION_DEPRECATED" format="dsendhh"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="bc_shelf_spotlight_inter" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+              <snow-sql id="bc_shelf_spotlight_update" connection-ref="snowflake"
+                  path-to-sql-file="bc_shelf_spotlight_update.sql"
+                  path-to-setup-ddl="bc_shelf_spotlight_update.ddl">
+            <requires>
+                <!-- REMOVE FOR BACKFILL -->
+                <stamp connection-ref="snowflake" instance="user_tracking" namespace="public" name="user_impressions" format="dshh"/>
+                <stamp connection-ref="snowflake" instance="user_tracking" namespace="public" name="user_interactions" format="dshh"/>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="rust" name="a_unique_users" format="ds"/>
+
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="bc_shelf_spotlight_update" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="bc_shelf_spotlight_unique" connection-ref="snowflake"
+                  path-to-sql-file="bc_shelf_spotlight_unique.sql"
+                  path-to-setup-ddl="bc_shelf_spotlight_unique.ddl">
+            <requires>
+                <task ref="bc_shelf_spotlight_imps"/>
+                <task ref="bc_shelf_spotlight_inter"/>
+                <task ref="bc_shelf_spotlight_update"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="bc_shelf_spotlight_unique"
+                              format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="bc_dfp_ads" connection-ref="snowflake"
+                  path-to-sql-file="bc_dfp_ads.sql"
+                  path-to-setup-ddl="bc_dfp_ads.ddl">
+            <requires>
+                <!-- spock table only has ds starting from '2022-07-20' do not backfill prior to this date -->
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="f_dfp_hourly_master_impressions" format="ds"/>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS_ENGINEERING" namespace="CONTENT_SPONSORSHIPS" name="t_spock_brandchannels" format="ds"/>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="public" name="rio_sessions" format="ds"/>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="dfp" name="f_dfp_daily_line_items_by_id" format="ds"/>
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="BRAND_CHANNEL_USER_JOURNEY" name="aggregate_page_views_daily" format="ds"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="ds_dfp_ads" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+         <snow-sql id="bc_video_impressions" connection-ref="snowflake"
+                  path-to-sql-file="bc_video_impressions.sql"
+                  path-to-setup-ddl="bc_video_impressions.ddl">
+            <requires>
+                <!-- REMOVE FOR BACKFILL -->
+                <!-- spock table only has ds starting from '2022-07-20' do not backfill prior to this date -->
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS_ENGINEERING" namespace="CONTENT_SPONSORSHIPS" name="t_spock_brandchannels" format="ds"/>
+                <stamp connection-ref="snowflake" instance="user_tracking" namespace="public" name="user_impressions" format="dshh"/>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="rust" name="a_unique_users" format="ds"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="bc_video_impressions" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+         <snow-sql id="bc_video_inter" connection-ref="snowflake"
+                  path-to-sql-file="bc_video_inter.sql"
+                  path-to-setup-ddl="bc_video_inter.ddl">
+            <requires>
+                <!-- REMOVE FOR BACKFILL -->
+                <stamp connection-ref="snowflake" instance="user_tracking" namespace="public" name="user_interactions" format="dshh"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="bc_video_inter" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+         <snow-sql id="bc_video_unique" connection-ref="snowflake"
+                  path-to-sql-file="bc_video_unique.sql"
+                  path-to-setup-ddl="bc_video_unique.ddl">
+            <requires>
+                 <task ref="bc_video_impressions"/>
+                 <task ref="bc_video_inter"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="bc_video_unique" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+         <snow-sql id="all_geo_locations" connection-ref="snowflake"
+                  path-to-sql-file="all_geo_locations.sql"
+                  path-to-setup-ddl="all_geo_locations.ddl">
+            <requires>
+                <task ref="virtual_geo_location"/>
+                <!-- REMOVE FOR BACKFILL -->
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="geo_to_location" format="ds"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="all_geo_locations" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+         <snow-sql id="bc_unique" connection-ref="snowflake"
+                  path-to-sql-file="bc_unique.sql"
+                  path-to-setup-ddl="bc_unique.ddl">
+            <requires>
+                <!-- REMOVE FOR BACKFILL -->
+                <!-- spock table only has ds starting from '2022-07-20' do not backfill prior to this date -->
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS_ENGINEERING" namespace="CONTENT_SPONSORSHIPS" name="t_spock_brandchannels" format="ds"/>
+                <task ref="bc_shelf_spotlight_unique"/>
+                <task ref="bc_dfp_ads"/>
+                <task ref="bc_video_unique"/>
+                <stamp connection-ref="snowflake" instance="user_tracking" namespace="public" name="user_interactions" format="dshh"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="bc_unique" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="bc_dwell_time_agg" connection-ref="snowflake"
+                  path-to-sql-file="bc_dwell_time_agg.sql"
+                  path-to-setup-ddl="bc_dwell_time_agg.ddl">
+            <requires>
+                <task ref="bc_dwell_time_unique"/>
+                <task ref="bc_unique"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="bc_dwell_time_agg" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+         <snow-sql id="bc_agg" connection-ref="snowflake"
+                  path-to-sql-file="bc_agg.sql"
+                  path-to-setup-ddl="bc_agg.ddl">
+            <requires>
+                <task ref="bc_unique"/>
+                <!-- spock table only has ds starting from '2022-07-20' do not backfill prior to this date -->
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS_ENGINEERING" namespace="CONTENT_SPONSORSHIPS" name="t_spock_brandchannels" format="ds"/>
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="BRAND_CHANNEL_USER_JOURNEY" name="aggregate_page_views_daily" format="ds"/>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="rust" name="a_unique_users" format="ds"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="bc_agg" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+         <snow-sql id="bc_user_journey" connection-ref="snowflake"
+                  path-to-sql-file="bc_user_journey.sql"
+                  path-to-setup-ddl="bc_user_journey.ddl">
+            <requires>
+
+                <task ref="bc_unique"/>
+                <!-- spock table only has ds starting from '2022-07-20' do not backfill prior to this date -->
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS_ENGINEERING" namespace="CONTENT_SPONSORSHIPS" name="t_spock_brandchannels" format="ds"/>
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="sales" name="all_geo_locations" format="ds"/>
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="BRAND_CHANNEL_USER_JOURNEY" name="aggregate_page_views_daily" format="ds"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="bc_user_journey" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="bc_view_rate" connection-ref="snowflake"
+                  path-to-sql-file="bc_view_rate.sql"
+                  path-to-setup-ddl="bc_view_rate.ddl">
+            <requires>
+                <task ref="bc_unique"/>
+                <!-- spock table only has ds starting from '2022-07-20' do not backfill prior to this date -->
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS_ENGINEERING" namespace="CONTENT_SPONSORSHIPS" name="t_spock_brandchannels" format="ds"/>
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="sales" name="all_geo_locations" format="ds"/>
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="BRAND_CHANNEL_USER_JOURNEY" name="aggregate_page_views_daily" format="ds"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="bc_view_rate" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="bc_media_impact" connection-ref="snowflake"
+                  path-to-sql-file="bc_media_impact.sql"
+                  path-to-setup-ddl="bc_media_impact.ddl">
+            <requires>
+                <task  ref="bc_unique"/>
+                <!-- spock table only has ds starting from '2022-07-20' do not backfill prior to this date -->
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS_ENGINEERING" namespace="CONTENT_SPONSORSHIPS" name="t_spock_brandchannels" format="ds"/>
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="sales" name="all_geo_locations" format="ds"/>
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="BRAND_CHANNEL_USER_JOURNEY" name="aggregate_page_views_daily" format="ds"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="bc_media_impact" format="ds"/>
+            </on-success>
+        </snow-sql>
+        <email id="final_step">
+            <requires>
+                <task ref="bc_agg"/>
+                <task ref="bc_media_impact"/>
+                <task ref="bc_view_rate"/>
+                <task ref="bc_user_journey"/>
+                <task ref="bc_dwell_time_agg"/>
+            </requires>
+            <content>
+                <subject>brand channel pipeline</subject>
+                <body>Daily run successful - {{CURRENT_DAY}}</body>
+            </content>
+        </email>
+
+    </flow>
+</pipe>

@@ -1,0 +1,20 @@
+
+CREATE TABLE IF NOT EXISTS &{pipeline_schema_sf}.bc_shelf_spotlight_unique (
+
+        ds                              date,
+        unique_id                       string,
+        marketing_campaign_id           string,
+        user_country_id                 int,
+        user_country_name               string,
+        bc_geo_id                          int,
+        bc_geo_name                        string,
+        os_type                         string,
+        locale                          string,
+        bc_shelf                        string,
+        impressions                     int,
+        interactions                    int
+
+);
+
+GRANT SELECT ON &{pipeline_schema_sf}.bc_shelf_spotlight_unique TO PUBLIC;
+
