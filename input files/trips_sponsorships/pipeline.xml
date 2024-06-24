@@ -1,0 +1,364 @@
+<pipe xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="https://whampipe.wh.tripadvisor.com/xsds/0.02/" xsi:schemaLocation="https://whampipe.wh.tripadvisor.com/xsds/0.02/ https://whampipe.wh.tripadvisor.com/xsds/0.02/whampipe-0.02.xsd">
+
+    <declaration>
+        <name>trips_sponsorships</name>
+        <group>cx-whampipe</group>
+        <description>Pipeline for sponsored trips reporting</description>
+        <!-- TODO update emails -->
+        <success-emails>xhou@tripadvisor.com,media-analytics@tripadvisor.com,blackhole@tripadvisor.com</success-emails>
+        <failure-emails>xhou@tripadvisor.com,media-analytics@tripadvisor.com,blackhole@tripadvisor.com</failure-emails>
+        <tags>corex</tags>
+        <schedule-display>daily</schedule-display>
+        <engine-defaults>
+            <spark>
+                <param name="--driver-memory" value="4g"/>
+                <param name="--executor-cores" value="4"/>
+                <param name="--executor-memory " value="12g"/>
+                <conf-param name="spark.shuffle.service.enabled" value="true"/>
+                <conf-param name="spark.sql.orc.impl" value="native"/>
+            </spark>
+        </engine-defaults>
+    </declaration>
+
+
+    <connection>
+        <snowflake id="snowflake" database="{{snow_database}}" role="{{snowflake_role}}" credential="ta-snowflake"/>
+    </connection>
+
+
+    <variables>
+        <!-- TODO FILLIN IN VARIABLES -->
+        <variable id="snow_database" description="target database to write to on snowflake">
+            <production>RIO_SF</production>
+            <private>USER_SCRATCH</private>
+        </variable>
+        <variable id="pipeline_schema" description="target schema to write to on snowflake">
+            <production>cx_analytics</production>
+            <private>x_{{USER}}</private>
+        </variable>
+        <variable id="hive_pipeline_schema" description="target schema to write to in hive">
+            <production>ad_analytics</production>
+            <private>x_{{USER}}</private>
+        </variable>
+        <variable id="snowflake_role" description="the role to use on snowflake">
+            <production>cx_analytics_role</production>
+            <private>cx_analytics_role</private>
+        </variable>
+<!--        <variable id="snowflake_warehouse" description="the warehouse to use on snowflake">-->
+<!--            <production></production>-->
+<!--            <private></private>-->
+<!--        </variable>-->
+
+    </variables>
+
+
+    <flow>
+
+
+        <!-- Guarantee the necessary schema is in place for the transfer -->
+
+
+        <snow-sql id="trip_sponsors" connection-ref="snowflake"
+                  path-to-sql-file="trip_sponsors.sql"
+                  path-to-setup-ddl="trip_sponsors.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="public" name="sponsored_trips_dwell_time_v2" format="ds"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="cx_analytics" name="trip_sponsors" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="sponsored_trips" connection-ref="snowflake"
+                  path-to-sql-file="sponsored_trips.sql"
+                  path-to-setup-ddl="sponsored_trips.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="cx_analytics" name="member_metadata" format="ds"/>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="public" name="sponsored_trips_dwell_time_v2" format="ds"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="cx_analytics" name="sponsored_trips" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="trips_orderid_mapping" connection-ref="snowflake"
+                  path-to-sql-file="trips_orderid_mapping.sql"
+                  path-to-setup-ddl="trips_orderid_mapping.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="user_tracking" namespace="public" name="user_impressions" format="dshh"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="cx_analytics" name="trips_orderid_mapping" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="active_sponsored_trips_detail" connection-ref="snowflake"
+                  path-to-sql-file="active_sponsored_trips_detail.sql"
+                  path-to-setup-ddl="active_sponsored_trips_detail.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="rio_sf" namespace="cx_analytics" name="t_saves_lists" format="dsnodashes"> <offset duration="P1D"/> </stamp>
+                <stamp connection-ref="snowflake" instance="rio_sf" namespace="cx_analytics" name="member_metadata" format="ds"> </stamp>
+                <stamp connection-ref="snowflake" instance="rio_sf" namespace="cx_analytics" name="sponsored_trips" format="ds"> </stamp>
+                <task ref="trips_orderid_mapping"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="cx_analytics" name="active_sponsored_trips_detail" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="active_sponsored_trips_dwell_time_unique_1" connection-ref="snowflake"
+                  path-to-sql-file="active_sponsored_trips_dwell_time_unique_1.sql"
+                  path-to-setup-ddl="active_sponsored_trips_dwell_time_unique_1.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="user_tracking" namespace="public" name="a_lookback_blessed_joined" format="ds"/>
+                <stamp connection-ref="snowflake" instance="WEB_PLATFORM" namespace="raw" name="rum_page_loads" format="dsendhh"/>
+                <stamp connection-ref="snowflake" instance="WEB_PLATFORM" namespace="raw" name="rum_navigations" format="dsendhh"/>
+                <task ref="active_sponsored_trips_detail"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="cx_analytics" name="active_sponsored_trips_dwell_time_unique_1" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="sponsored_trips_dwell_time_unique_sf" connection-ref="snowflake"
+                  path-to-sql-file="sponsored_trips_dwell_time_unique_sf.sql"
+                  path-to-setup-ddl="sponsored_trips_dwell_time_unique_sf.ddl">
+            <requires>
+                <!--<stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="op1_line_items" format="ds"/>-->
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="pio" name="pio_op1_data_shim" format="ds"/>
+                <task ref = "active_sponsored_trips_dwell_time_unique_1"/>
+                <task ref = "active_sponsored_trips_detail"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="cx_analytics" name="sponsored_trips_dwell_time_unique_sf" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <!--snow-sql id="sponsored_trips_dwell_time_wp" connection-ref="snowflake"
+                  path-to-sql-file="sponsored_trips_dwell_time_wp.sql"
+                  path-to-setup-ddl="sponsored_trips_dwell_time_wp.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="public" name="sponsored_trips_dwell_time_v2" format="ds"/>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="rust" name="a_unique_users" format="ds"/>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="cx_analytics" name="t_saves_lists" format="ds"/>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="cx_analytics" name="member_metadata" format="ds"/>
+                <task ref = "trip_sponsors"/>
+                <task ref = "sponsored_trips"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="cx_analytics" name="sponsored_trips_dwell_time_wp" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+
+        <snow-sql id="sponsored_trips_impressions" connection-ref="snowflake"
+                  path-to-sql-file="sponsored_trips_impressions.sql"
+                  path-to-setup-ddl="sponsored_trips_impressions.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="public" name="sponsored_trip_imps" format="ds"/>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="rust" name="a_unique_users" format="ds"/>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="cx_analytics" name="t_saves_lists" format="ds"/>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="cx_analytics" name="member_metadata" format="ds"/>
+                <task ref = "trip_sponsors"/>
+                <task ref = "sponsored_trips"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="cx_analytics" name="sponsored_trips_impressions" format="ds"/>
+            </on-success>
+        </snow-sql-->
+
+        <snow-sql id="sponsored_trips_pageviews" connection-ref="snowflake"
+                  path-to-sql-file="sponsored_trips_pageviews.sql"
+                  path-to-setup-ddl="sponsored_trips_pageviews.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="USER_TRACKING" namespace="PUBLIC" name="BLESSED_UNIQUE_USERS" format="ds"/>
+                <stamp connection-ref="snowflake" instance="user_tracking" namespace="public" name="user_impressions" format="dshh"/>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="pio" name="pio_op1_data_shim" format="ds"/>
+                <task ref = "trip_sponsors"/>
+                <task ref = "sponsored_trips"/>
+                <task ref = "active_sponsored_trips_detail"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="cx_analytics" name="sponsored_trips_pageviews" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+
+        <snow-sql id="sponsored_trips_social" connection-ref="snowflake"
+                  path-to-sql-file="sponsored_trips_social.sql"
+                  path-to-setup-ddl="sponsored_trips_social.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="public" name="trip_social_actions" format="ds"/>
+               <!-- <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="op1_line_items" format="ds"/>-->
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="pio" name="pio_op1_data_shim" format="ds"/>
+                <task ref = "trip_sponsors"/>
+                <task ref = "sponsored_trips"/>
+                <task ref = "active_sponsored_trips_detail"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="cx_analytics" name="sponsored_trips_social" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+
+        <snow-sql id="sponsored_trips_poi_actions" connection-ref="snowflake"
+                  path-to-sql-file="sponsored_trips_poi_actions.sql"
+                  path-to-setup-ddl="sponsored_trips_poi_actions.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="USER_TRACKING" namespace="PUBLIC" name="F_USER_INTERACTION_DEPRECATED" format="dsendhh"/>
+                <stamp connection-ref="snowflake" instance="USER_TRACKING" namespace="PUBLIC" name="BLESSED_UNIQUE_USERS" format="ds"/>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="cx_analytics" name="t_saves_lists" format="ds"/>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="cx_analytics" name="member_metadata" format="ds"/>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="location_hierarchy" format="ds"/>
+                <task ref = "trip_sponsors"/>
+                <task ref = "active_sponsored_trips_detail"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="cx_analytics" name="sponsored_trips_poi_actions" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+
+        <snow-sql id="sponsored_trips_poi_saves_wp" connection-ref="snowflake"
+                  path-to-sql-file="sponsored_trips_poi_saves_wp.sql"
+                  path-to-setup-ddl="sponsored_trips_poi_saves_wp.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="USER_TRACKING" namespace="PUBLIC" name="BLESSED_UNIQUE_USERS" format="ds"/>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="cx_analytics" name="t_saves_items" format="ds"/>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="cx_analytics" name="member_metadata" format="ds"/>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="cx_analytics" name="t_saves_original_items" format="ds"/>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="location_hierarchy" format="ds"/>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="cx_analytics" name="t_saves_lists" format="ds"/>
+                <task ref = "trip_sponsors"/>
+                <task ref = "active_sponsored_trips_detail"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="cx_analytics" name="sponsored_trips_poi_saves_wp" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+
+        <snow-sql id="sponsored_trips_poi" connection-ref="snowflake"
+                  path-to-sql-file="sponsored_trips_poi.sql"
+                  path-to-setup-ddl="sponsored_trips_poi.ddl">
+            <requires>
+                <!--<stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="op1_line_items" format="ds"/>-->
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="pio" name="pio_op1_data_shim" format="ds"/>
+                <task ref = "sponsored_trips_poi_actions"/>
+                <task ref = "sponsored_trips_poi_saves_wp"/>
+                <task ref = "sponsored_trips"/>
+                <task ref = "active_sponsored_trips_detail"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="cx_analytics" name="sponsored_trips_poi" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+
+        <snow-sql id="sponsored_trips_pvs" connection-ref="snowflake"
+                  path-to-sql-file="sponsored_trips_pvs.sql"
+                  path-to-setup-ddl="sponsored_trips_pvs.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="USER_TRACKING" namespace="PUBLIC" name="BLESSED_UNIQUE_USERS" format="ds"/>
+                <stamp connection-ref="snowflake" instance="user_tracking" namespace="public" name="user_impressions" format="dshh"/>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="pio" name="pio_op1_data_shim" format="ds"/>
+                <task ref = "active_sponsored_trips_detail"/>
+                <task ref = "trips_orderid_mapping"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="cx_analytics" name="sponsored_trips_pageviews" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="sponsored_trips_interaction" connection-ref="snowflake"
+                  path-to-sql-file="sponsored_trips_interaction.sql"
+                  path-to-setup-ddl="sponsored_trips_interaction.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="USER_TRACKING" namespace="PUBLIC" name="BLESSED_UNIQUE_USERS" format="ds"/>
+                <stamp connection-ref="snowflake" instance="user_tracking" namespace="public" name="user_interactions" format="dshh"/>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="pio" name="pio_op1_data_shim" format="ds"/>
+                <task ref = "active_sponsored_trips_detail"/>
+                <task ref = "trips_orderid_mapping"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="cx_analytics" name="sponsored_trips_pageviews" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="sponsored_trips_poi_actions_new" connection-ref="snowflake"
+                  path-to-sql-file="sponsored_trips_poi_actions_new.sql"
+                  path-to-setup-ddl="sponsored_trips_poi_actions_new.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="USER_TRACKING" namespace="PUBLIC" name="BLESSED_UNIQUE_USERS" format="ds"/>
+                <stamp connection-ref="snowflake" instance="user_tracking" namespace="public" name="user_interactions" format="dshh"/>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="pio" name="pio_op1_data_shim" format="ds"/>
+                <task ref = "active_sponsored_trips_detail"/>
+                <task ref = "trips_orderid_mapping"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="cx_analytics" name="sponsored_trips_pageviews" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="sponsored_trips_poi_agg" connection-ref="snowflake"
+                  path-to-sql-file="sponsored_trips_poi_agg.sql"
+                  path-to-setup-ddl="sponsored_trips_poi_agg.ddl">
+            <requires>
+                <task ref = "sponsored_trips_poi_actions_new"/>
+                <task ref = "trips_orderid_mapping"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="cx_analytics" name="sponsored_trips_pageviews" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="view_trips" connection-ref="snowflake"
+                  path-to-sql-file="view_trips.sql">
+            <requires>
+                <task ref="sponsored_trips_poi"/>
+                <task ref="sponsored_trips_social"/>
+                <task ref="sponsored_trips_pageviews"/>
+                <task ref="sponsored_trips_dwell_time_unique_sf"/>
+            </requires>
+        </snow-sql>
+
+        <snow-sql id="view_trips_new" connection-ref="snowflake"
+                  path-to-sql-file="view_trips_new.sql">
+            <requires>
+                <task ref="sponsored_trips_poi_agg"/>
+                <task ref="sponsored_trips_interaction"/>
+                <task ref="sponsored_trips_pvs"/>
+                <task ref="sponsored_trips_dwell_time_unique_sf"/>
+            </requires>
+        </snow-sql>
+
+        <!--snow-sql id="dwelltime_backfill_trips" connection-ref="snowflake"
+                  path-to-sql-file="dwelltime_backfill_trips.sql"
+                  path-to-setup-ddl="dwelltime_backfill_trips.ddl">
+
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="cx_analytics" name="dwelltime_backfill_trips" format="ds"/>
+            </on-success>
+        </snow-sql-->
+
+
+        <email id="success_email">
+            <requires>
+                <task ref="sponsored_trips_poi_agg"/>
+                <task ref="sponsored_trips_interaction"/>
+                <task ref="sponsored_trips_pvs"/>
+                <task ref="sponsored_trips_dwell_time_unique_sf"/>
+                <task ref="view_trips_new"/>
+                <task ref="view_trips"/>
+            </requires>
+            <content>
+                <subject>sponsored trips reporting</subject>
+                <body>Daily run successful - {{CURRENT_DAY}}</body>
+            </content>
+        </email>
+
+
+
+    </flow>
+
+</pipe>

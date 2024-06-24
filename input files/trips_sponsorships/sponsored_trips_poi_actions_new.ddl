@@ -1,0 +1,22 @@
+CREATE TABLE IF NOT EXISTS &{pipeline_schema}.sponsored_trips_poi_actions_new (
+       ds               DATE,
+       unique_id        STRING,
+       os_type          STRING,
+       locale           STRING,
+       USER_COUNTRY_NAME STRING,
+       marketing_campaign_id INT,
+       user_id          INT,
+       username         STRING,
+       trip_title       STRING,
+       trip_desc        STRING,
+       tripid           INT,
+       saveType         STRING,
+       detailid         INT,
+       detailid_name    STRING,
+       poi_map_click    INT,
+       poi_carousel     INT,
+       poi_readmore     INT,
+       poi_clickthr     INT,
+       poi_map_clickthr INT,
+       poi_save         INT
+);

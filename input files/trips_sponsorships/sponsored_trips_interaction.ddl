@@ -1,0 +1,23 @@
+CREATE TABLE IF NOT EXISTS &{pipeline_schema}.sponsored_trips_interaction (
+    DS                  DATE,
+    os_type             STRING,
+    locale              STRING,
+    trip_id             INT,
+    title               STRING,
+    username            STRING,
+    user_country_id     STRING,
+    user_country_name   STRING,
+    op_advertiser_id    int,
+    advertiser_name     string,
+    sales_order_id      int,
+    sales_order_name    string,
+    industry            string,
+    region              string,
+    account_exec        string,
+    trip_mapzoom        int,
+    trip_readmore       int,
+    trip_share          int,
+    trip_save           int,
+    trip_sponsor_click  int,
+    uniques_with_interactions int
+);
