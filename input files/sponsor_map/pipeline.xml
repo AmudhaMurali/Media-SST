@@ -1,0 +1,117 @@
+<pipe xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="https://whampipe.wh.tripadvisor.com/xsds/0.02/" xsi:schemaLocation="https://whampipe.wh.tripadvisor.com/xsds/0.02/ https://whampipe.wh.tripadvisor.com/xsds/0.02/whampipe-0.02.xsd">
+
+    <declaration>
+        <name>sponsor_map</name>
+        <group>cx-whampipe</group>
+        <description>Pipeline for sponsor map dashboard</description>
+        <success-emails>bishen@tripadvisor.com,blackhole@tripadvisor.com</success-emails>
+        <failure-emails>bishen@tripadvisor.com,blackhole@tripadvisor.com</failure-emails>
+        <tags>corex</tags>
+        <schedule-display>daily</schedule-display>
+        <engine-defaults>
+            <spark>
+                <param name="--driver-memory" value="4g"/>
+                <param name="--executor-cores" value="4"/>
+                <param name="--executor-memory " value="12g"/>
+                <conf-param name="spark.shuffle.service.enabled" value="true"/>
+                <conf-param name="spark.sql.orc.impl" value="native"/>
+            </spark>
+        </engine-defaults>
+    </declaration>
+
+
+    <connection>
+        <snowflake id="snowflake" database="{{snow_database}}" warehouse="{{snowflake_warehouse}}" role="{{snowflake_role}}" credential="ta-snowflake"/>
+    </connection>
+
+
+
+    <variables>
+        <variable id="snow_database" description="target database to write to on snowflake">
+            <production>display_ads</production>
+            <private>user_scratch</private>
+        </variable>
+        <variable id="pipeline_schema" description="target schema to write to on snowflake">
+            <production>sales</production>
+            <private>x_{{USER}}</private>
+        </variable>
+        <variable id="snowflake_role" description="the role to use on snowflake">
+            <production>cx_analytics_role</production>
+            <private>cx_analytics_role</private>
+        </variable>
+       <variable id="snowflake_warehouse" description="the warehouse to use on snowflake">
+            <production>display_ads</production>
+            <private>display_ads_dev</private>
+        </variable>
+        <date-variable id="start_dt_m7" from="EXECUTION" add="-P7D" format="yyyy-MM-dd" description="7_days_prior"/>
+    </variables>
+
+
+
+    <flow>
+
+         <snow-sql id="cta_click_count" connection-ref="snowflake"
+                  path-to-sql-file="cta_click_count.sql"
+                  path-to-setup-ddl="cta_click_count.ddl">
+            <requires>
+              <stamp connection-ref="snowflake" instance="user_tracking" namespace="public" name="user_interactions" format="dshh"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="cta_click_count" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+         <snow-sql id="map_open_count" connection-ref="snowflake"
+                  path-to-sql-file="map_open_count.sql"
+                  path-to-setup-ddl="map_open_count.ddl">
+            <requires>
+               <stamp connection-ref="snowflake" instance="user_tracking" namespace="public" name="user_interactions" format="dshh"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="map_open_count" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="pin_hover_tab_count" connection-ref="snowflake"
+                  path-to-sql-file="pin_hover_tab_count.sql"
+                  path-to-setup-ddl="pin_hover_tab_count.ddl">
+            <requires>
+                 <stamp connection-ref="snowflake" instance="user_tracking" namespace="public" name="user_interactions" format="dshh"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="pin_hover_tab_count" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="data_sponsor_map" connection-ref="snowflake"
+                  path-to-sql-file="data_sponsor_map.sql"
+                  path-to-setup-ddl="data_sponsor_map.ddl">
+            <requires>
+                <task ref="pin_hover_tab_count"/>
+                <task ref="cta_click_count"/>
+                <task ref="map_open_count"/>
+                <stamp connection-ref="snowflake" instance="rio_sf" namespace="public" name="t_location" format="ds"/>
+                <!--stamp connection-ref="snowflake" instance="DISPLAY_ADS_ENGINEERING" namespace="CONTENT_SPONSORSHIPS" name="SPOCK_SPONSORSHIP_CAMPAIGNS" format="ds"/-->
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="data_sponsor_map" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+
+        <email id="success_email">
+            <requires>
+                <task ref="pin_hover_tab_count"/>
+                <task ref="cta_click_count"/>
+                <task ref="map_open_count"/>
+                <task ref="data_sponsor_map"/>
+            </requires>
+            <content>
+                <subject>campaign reporting overview</subject>
+                <body>Daily run successful - {{CURRENT_DAY}}</body>
+            </content>
+        </email>
+
+    </flow>
+
+</pipe>
