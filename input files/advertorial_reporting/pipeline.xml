@@ -1,0 +1,264 @@
+<pipe xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="https://whampipe.wh.tripadvisor.com/xsds/0.02/" xsi:schemaLocation="https://whampipe.wh.tripadvisor.com/xsds/0.02/ https://whampipe.wh.tripadvisor.com/xsds/0.02/whampipe-0.02.xsd">
+
+    <!-- CONFIGURATION AND ENGINE DEFAULTS -->
+    <declaration>
+        <name>advertorial_reporting</name>
+        <group>ta-analytics-dev</group>
+        <description>Track key metrics for Advertorial campaigns</description>
+        <success-emails>blackhole@tripadvisor.com</success-emails>
+        <failure-emails>bishen@tripadvisor.com,blackhole@tripadvisor.com</failure-emails>
+        <tags>sales</tags>
+        <schedule-display>daily</schedule-display>
+    </declaration>
+
+    <connection>
+        <snowflake credential="ta-snowflake" id="snowflake" database="{{snow_database}}" role="{{snow_role}}"/>
+    </connection>
+
+    <variables>
+
+        <!--<variable id="snow_database" description="database target sf">
+            <production>analytics</production>
+            <private>user_scratch</private>
+        </variable>
+
+        <variable id="pipeline_schema_sales" description="target schema to write to sf">
+            <production>sales</production>
+            <private>x_{{USER}}</private>
+        </variable>-->
+
+        <variable id="snow_database" description="database target sf">
+            <production>display_ads</production>
+            <private>user_scratch</private>
+        </variable>
+
+        <variable id="pipeline_schema" description="target schema to write to on leo">
+            <production>tripdna</production>
+            <private>{{USER_SCHEMA_PREFIX}}</private>
+        </variable>
+
+         <variable id="pipeline_schema_sf" description="target schema to write to sf">
+            <production>sales</production>
+            <private>x_{{USER}}</private>
+        </variable>
+
+        <variable id="snow_role">
+            <production>analytics_role</production>
+            <private>analytics_role</private>
+        </variable>
+    </variables>
+
+
+
+    <flow>
+
+         <snow-sql id="op1_advertiser_country" connection-ref="snowflake"
+                  path-to-sql-file="op1_advertiser_country.sql"
+                  path-to-setup-ddl="op1_advertiser_country.ddl">
+            <requires>
+               <!--<stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="operative_one" name="_all" format="ds"> <offset duration="-P1D"/></stamp>-->
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="pio" name="pio_op1_data_shim" format="ds"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="op1_advertiser_country" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="infocenter_dwell_time_by_unique" connection-ref="snowflake"
+                   path-to-sql-file="InfoCenter_Dwell_Time_By_Unique.sql"
+                   path-to-setup-ddl="InfoCenter_Dwell_Time_By_Unique.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="user_tracking" namespace="public" name="a_lookback_blessed_joined" format="ds"/>
+                <stamp connection-ref="snowflake" instance="WEB_PLATFORM" namespace="raw" name="rum_page_loads" format="dsendhh"/>
+                <stamp connection-ref="snowflake" instance="WEB_PLATFORM" namespace="raw" name="rum_navigations" format="dsendhh"/>
+                <stamp connection-ref="snowflake" instance="WEB_PLATFORM" namespace="raw" name="rum_metrics" format="dsendhh"/>
+            </requires>
+            <on-success>
+                 <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="infocenter_dwell_time_by_unique" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <!--transfer id="to_sf_InfoCenter_Dwell_Time_By_Unique">
+            <requires>
+                <task ref="infocenter_dwell_time_by_unique"/>
+            </requires>
+            <source>
+                <hive-auto connection-ref="leo" namespace="{{pipeline_schema}}" name="infocenter_dwell_time_by_unique"/>
+            </source>
+            <target>
+                <snowflake-auto connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="infocenter_dwell_time_by_unique"/>
+            </target>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="infocenter_dwell_time_by_unique" format="ds"/>
+            </on-success>
+        </transfer-->
+
+        <snow-sql id="infocenter_reporting" connection-ref="snowflake"
+                  path-to-sql-file="infocenter_reporting.sql"
+                  path-to-setup-ddl="infocenter_reporting.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="anm" name="a_lookback_blessed_joined_only_pv" format="ds"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="infocenter_reporting" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="infocenter_reporting_agg" connection-ref="snowflake"
+                  path-to-sql-file="infocenter_reporting_agg.sql"
+                  path-to-setup-ddl="infocenter_reporting_agg.ddl">
+            <requires>
+                <!--<stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="op1_line_items" format="ds"/>-->
+                 <!--remove when backfill-->
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="pio" name="pio_op1_data_shim" format="ds"/>
+                <task ref="infocenter_reporting"/>
+                <task ref="op1_advertiser_country"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="infocenter_reporting_agg" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="infocenter_dwell_time_agg" connection-ref="snowflake"
+                  path-to-sql-file="infocenter_dwell_time_agg.sql"
+                  path-to-setup-ddl="infocenter_dwell_time_agg.ddl">
+            <requires>
+                <!--<stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="op1_line_items" format="ds"/>-->
+                <!--remove when backfill-->
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="pio" name="pio_op1_data_shim" format="ds"/>
+                <task ref="infocenter_dwell_time_by_unique"/>
+                <task ref="op1_advertiser_country"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="infocenter_dwell_time_agg" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+
+
+
+        <!-- EXPIRED PIPELINE REPORTING PRE JULY 2021 -->
+
+
+         <!--<spark-sql id="InfoCenter_Dwell_Report" connection-ref="leo"
+                   path-to-sql-file="EXP_InfoCenter_Dwell_Report.sql"
+                   path-to-setup-ddl="EXP_InfoCenter_Dwell_Report.ddl">
+            <requires>
+                <task ref="viewability_dep"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="leo" namespace="{{pipeline_schema}}" name="InfoCenter_Dwell_Report"
+                              format="ds"/>
+            </on-success>
+        </spark-sql>
+
+         <transfer id="to_sf_InfoCenter_Dwell_Time" start-date-offset="P2D">
+            <requires>
+                <task ref="InfoCenter_Dwell_Report"/>
+            </requires>
+            <source> <hive-auto connection-ref="leo" name="InfoCenter_Dwell_Report"  namespace="{{pipeline_schema}}"/> </source>
+            <target> <snowflake-auto connection-ref="snowflake" name="InfoCenter_Dwell_Report" namespace="{{pipeline_schema_sf}}"/></target>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="InfoCenter_Dwell_Report" format="ds"/>
+            </on-success>
+        </transfer>-->
+
+         <!--<spark-sql id="InfoCenter_GAadsol" connection-ref="leo"
+                   path-to-sql-file="EXP_InfoCenter_GAadsol.sql"
+                   path-to-setup-ddl="EXP_InfoCenter_GAadsol.ddl">
+            <requires>
+                <task ref="garecord_dep"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="leo" namespace="{{pipeline_schema}}" name="InfoCenter_GAadsol"
+                              format="ds"/>
+            </on-success>
+        </spark-sql>
+
+        <transfer id="to_sf_InfoCenter_GAadsol"> remove next part? <transfer id="to_sf_InfoCenter_GAadsol" start-date-offset="P2D">
+            <requires>
+                <task ref="InfoCenter_GAadsol"/>
+            </requires>
+            <source>
+                <hive-auto connection-ref="leo" namespace="{{pipeline_schema}}" name="InfoCenter_GAadsol"/>
+            </source>
+            <target>
+                <snowflake-auto connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="InfoCenter_GAadsol"/>
+            </target>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="InfoCenter_GAadsol" format="ds"/>
+            </on-success>
+        </transfer>-->
+
+
+         <!--<spark-sql id="InfoCenter_Pageviews_Uniques" connection-ref="leo"
+                   path-to-sql-file="EXP_InfoCenter_Pageviews_Uniques.sql"
+                   path-to-setup-ddl="EXP_InfoCenter_Pageviews_Uniques.ddl">
+            <requires>
+                <task ref="lookback_dep"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="leo" namespace="{{pipeline_schema}}" name="InfoCenter_Pageviews_Uniques" format="ds"/>
+            </on-success>
+        </spark-sql>
+
+        <transfer id="to_sf_InfoCenter_Pageviews_Uniques"> remove next part? <transfer id="to_sf_InfoCenter_GAadsol" start-date-offset="P2D">
+            <requires>
+                <task ref="InfoCenter_Pageviews_Uniques"/>
+            </requires>
+            <source>
+                <hive-auto connection-ref="leo" namespace="{{pipeline_schema}}" name="InfoCenter_Pageviews_Uniques"/>
+            </source>
+            <target>
+                <snowflake-auto connection-ref="snowflake" namespace="{{pipeline_schema_sales}}" name="InfoCenter_Pageviews_Uniques"/>
+            </target>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema_sales}}" name="InfoCenter_Pageviews_Uniques" format="ds"/>
+            </on-success>
+        </transfer> -->
+
+         <!--<spark-sql id="InfoCenter_Video" connection-ref="leo"
+                   path-to-sql-file="EXP_InfoCenter_Video.sql"
+                   path-to-setup-ddl="EXP_InfoCenter_Video.ddl">
+            <requires>
+                <task ref="garecord_dep"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="leo" namespace="{{pipeline_schema}}" name="InfoCenter_Video"
+                              format="ds"/>
+            </on-success>
+        </spark-sql>
+
+        <transfer id="to_sf_InfoCenter_Video"> remove next part? <transfer id="to_sf_InfoCenter_GAadsol" start-date-offset="P2D">
+            <requires>
+                <task ref="InfoCenter_Video"/>
+            </requires>
+            <source>
+                <hive-auto connection-ref="leo" namespace="{{pipeline_schema}}" name="InfoCenter_Video"/>
+            </source>
+            <target>
+                <snowflake-auto connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="InfoCenter_Video"/>
+            </target>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema_sf}}" name="InfoCenter_Video" format="ds"/>
+            </on-success>
+        </transfer>  -->
+
+
+
+        <!--<email id="email_advertorial_reporting">
+            <requires>
+                <task ref="to_sf_InfoCenter_Dwell_Time_By_Unique"/>
+                <task ref="to_sf_InfoCenter_GAadsol"/>
+                <task ref="to_sf_InfoCenter_Pageviews_Uniques"/>
+                <task ref="to_sf_InfoCenter_Video"/>
+            </requires>
+            <content>
+                <subject>advertorial_reporting</subject>
+                <body>Daily run successful - {{CURRENT_DAY}}</body>
+            </content>
+        </email>-->
+
+    </flow>
+
+</pipe>
