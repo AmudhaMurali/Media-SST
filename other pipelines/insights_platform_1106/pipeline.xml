@@ -1,0 +1,648 @@
+<pipe xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="https://whampipe.wh.tripadvisor.com/xsds/0.02/" xsi:schemaLocation="https://whampipe.wh.tripadvisor.com/xsds/0.02/ https://whampipe.wh.tripadvisor.com/xsds/0.02/whampipe-0.02.xsd">
+
+    <declaration>
+        <name>insights_platform_1106</name>
+        <group>cx-whampipe</group>
+        <description>Pipeline for insights platform reporting</description>
+        <!-- TODO update emails -->
+        <success-emails>bishen@tripadvisor.com,blackhole@tripadvisor.com</success-emails>
+        <failure-emails>bishen@tripadvisor.com,blackhole@tripadvisor.com</failure-emails>
+        <tags>corex</tags>
+        <schedule-display>daily</schedule-display>
+        <engine-defaults>
+            <spark>
+                <param name="--driver-memory" value="4g"/>
+                <param name="--executor-cores" value="4"/>
+                <param name="--executor-memory " value="12g"/>
+                <conf-param name="spark.shuffle.service.enabled" value="true"/>
+                <conf-param name="spark.sql.orc.impl" value="native"/>
+            </spark>
+        </engine-defaults>
+    </declaration>
+
+
+    <connection>
+        <snowflake id="snowflake" database="{{snow_database}}" warehouse="{{snowflake_warehouse}}" role="{{snowflake_role}}" credential="ta-snowflake"/>
+    </connection>
+
+
+    <variables>
+        <!-- TODO FILLIN IN VARIABLES -->
+        <variable id="snow_database" description="target database to write to on snowflake">
+            <production>DISPLAY_ADS</production>
+            <private>USER_SCRATCH</private>
+        </variable>
+        <variable id="pipeline_schema" description="target schema to write to on snowflake">
+            <production>sales</production>
+            <private>x_{{USER}}</private>
+        </variable>
+        <variable id="snowflake_role" description="the role to use on snowflake">
+            <production>cx_analytics_role</production>
+            <private>cx_analytics_role</private>
+        </variable>
+       <variable id="snowflake_warehouse" description="the warehouse to use on snowflake">
+            <production>DISPLAY_ADS</production>
+            <private>DISPLAY_ADS_DEV</private>
+        </variable>
+
+        <variable id="start_dt_minus_30"> <production>dateadd(day, -30, to_date('{{start_dt}}'))</production></variable>
+        <variable id="end_dt_minus_30"> <production>dateadd(day, -30, to_date('{{end_dt}}'))</production></variable>
+
+        <date-variable id="start_dt_m1" from="EXECUTION" add="-P1D" format="yyyy-MM-dd" description="1_day_prior"/>
+        <date-variable id="start_dt_m30" from="EXECUTION" add="-P30D" format="yyyy-MM-dd" description="30_days_prior"/>
+        <date-variable id="start_dt_m90" from="EXECUTION" add="-P90D" format="yyyy-MM-dd" description="90_days_prior"/>
+        <date-variable id="start_dt_p90" from="EXECUTION" add="P90D" format="yyyy-MM-dd" description="90_days_following"/>
+
+    </variables>
+
+
+    <flow>
+
+        <!-- Guarantee the necessary schema is in place for the transfer -->
+
+
+        <noop id="displayads_media_impact_pipeline">
+            <requires>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="user_location_pageviews" format="ds"/>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="user_location_hotel_clicks_bookings" format="ds"/>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="user_location_attraction_bookings" format="ds"/>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="user_advertiser_interactions_daily" format="ds"/>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="user_order_impressions_daily" format="ds"/>
+            </requires>
+        </noop>
+         <noop id="displayads_advertiser_spend">
+            <requires>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="advertiser_spend" format="ds"/>
+            </requires>
+        </noop>
+        <!--<noop id="display_ads_competitive">
+            <requires>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="geos_by_unique_to_competitor" format="ds"/>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="competitor_geos_by_unique" format="ds"/>
+            </requires>
+        </noop>-->
+
+        <!-- Guarantee the necessary schema is in place for the transfer, to make development easier
+             Only run in private because against production databases,
+             you can't create new schemas for permission reasons -->
+        <snow-sql id="schema_initialize" connection-ref="snowflake" path-to-sql-file="snow_schema_initialize.sql">
+            <skip-if>
+                <schedule-environment>PRODUCTION</schedule-environment>
+            </skip-if>
+        </snow-sql>
+
+        <!-- Tables -->
+
+
+        <snow-sql id="dfp_ad_name" connection-ref="snowflake"
+                  path-to-sql-file="dfp_ad_name.sql"
+                  path-to-setup-ddl="dfp_ad_name.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="pio" name="pio_op1_data_shim" format="ds"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="dfp_ad_name" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="mei_campaign_agg" connection-ref="snowflake"
+                  path-to-sql-file="mei_campaign_agg.sql"
+                  path-to-setup-ddl="mei_campaign_agg.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="USER_TRACKING" namespace="PUBLIC" name="BLESSED_UNIQUE_USERS" format="ds"/>
+               <!-- remove during backfill -->
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="sales"
+                       name="gdoc_advertiser_geo_mapping" format="ds"/>
+                <task ref="dfp_ad_name"/>
+                <task ref="displayads_media_impact_pipeline"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="mei_campaign_agg" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="mei_campaign_agg_city" connection-ref="snowflake"
+                  path-to-sql-file="mei_campaign_agg_city.sql"
+                  path-to-setup-ddl="mei_campaign_agg_city.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="USER_TRACKING" namespace="PUBLIC" name="BLESSED_UNIQUE_USERS" format="ds"/>
+               <!-- remove during backfill -->
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="sales"
+                       name="gdoc_advertiser_geo_mapping" format="ds"/>
+                <task ref="dfp_ad_name"/>
+                <task ref="displayads_media_impact_pipeline"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="mei_campaign_agg_city" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+
+        <snow-sql id="mei_campaign_imps_lookback" connection-ref="snowflake"
+                  path-to-sql-file="mei_campaign_imps_lookback.sql"
+                  path-to-setup-ddl="mei_campaign_imps_lookback.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="USER_TRACKING" namespace="PUBLIC" name="BLESSED_UNIQUE_USERS" format="ds"/>
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="sales"
+                       name="gdoc_advertiser_geo_mapping" format="ds"/>
+                <task ref="displayads_media_impact_pipeline"/>
+                <task ref="dfp_ad_name"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="mei_campaign_imps_lookback" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+         <snow-sql id="mei_campaign_impressions" connection-ref="snowflake"
+                  path-to-sql-file="mei_campaign_impressions.sql"
+                  path-to-setup-ddl="mei_campaign_impressions.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="USER_TRACKING" namespace="PUBLIC" name="BLESSED_UNIQUE_USERS" format="ds"/>
+              <!-- remove during backfill -->
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="sales" name="user_order_impressions_daily_new" format="ds"/>
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="sales"
+                       name="gdoc_advertiser_geo_mapping" format="ds"/>
+                <task ref="dfp_ad_name"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="mei_campaign_impressions" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+         <snow-sql id="mei_campaign_view_rate" connection-ref="snowflake"
+                  path-to-sql-file="mei_campaign_view_rate.sql"
+                  path-to-setup-ddl="mei_campaign_view_rate.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="sales" name="user_advertiser_interactions_daily" format="ds"/>
+                <!-- remove for backfill-->
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="sales" name="user_order_impressions_daily_new" format="ds"/>
+                <stamp connection-ref="snowflake" instance="USER_TRACKING" namespace="PUBLIC" name="BLESSED_UNIQUE_USERS" format="ds"/>
+                <!-- remove during backfill -->
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="sales"
+                       name="gdoc_advertiser_geo_mapping" format="ds"/>
+                <task ref="dfp_ad_name"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="mei_campaign_view_rate" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+
+        <snow-sql id="mei_advertiser_spend" connection-ref="snowflake"
+                  path-to-sql-file="mei_advertiser_spend.sql"
+                  path-to-setup-ddl="mei_advertiser_spend.ddl">
+             <requires>
+                 <task ref="dfp_ad_name"/>
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="pio" name="pio_op1_data_shim" format="ds"/>
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="pio" name="vw_pio_op1_data_shim_op1_field_names" format="ds"/>
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="pio" name="pio_op1_rev_mng_data_shim" format="ds"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="mei_advertiser_spend" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+
+        <snow-sql id="blt_geo_list" connection-ref="snowflake"
+                  path-to-sql-file="blt_geo_list.sql"
+                  path-to-setup-ddl="blt_geo_list.ddl">
+              <requires>
+                  <!-- remove during backfill -->
+                  <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales"
+                         name="gdoc_baseline_trends_geos" format="ds"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="blt_geo_list" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="blt_ip_pageviews" connection-ref="snowflake"
+                  path-to-sql-file="blt_ip_pageviews.sql"
+                  path-to-setup-ddl="blt_ip_pageviews.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="sales" name="location_hierarchy" format="ds"/>
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="sales" name="user_location_pageviews" format="ds"/>
+               <stamp connection-ref="snowflake" instance="USER_TRACKING" namespace="PUBLIC" name="BLESSED_UNIQUE_USERS" format="ds"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="blt_ip_pageviews" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+
+
+        <snow-sql id="mei_baseline_trends_geo_new" connection-ref="snowflake"
+                  path-to-sql-file="mei_baseline_trends_geo_new.sql"
+                  path-to-setup-ddl="mei_baseline_trends_geo_new.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="USER_TRACKING" namespace="PUBLIC" name="BLESSED_UNIQUE_USERS" format="ds"/>
+                <task ref="displayads_media_impact_pipeline"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="baseline_trends_base" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+
+        <snow-sql id="mei_baseline_trends_top_cities" connection-ref="snowflake"
+                  path-to-sql-file="mei_baseline_trends_top_cities.sql"
+                  path-to-setup-ddl="mei_baseline_trends_top_cities.ddl">
+            <requires>
+                <task ref="mei_baseline_trends_geo_new"/>
+                <!-- remove during backfill-->
+                <task ref="blt_geo_list"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="blt_top_ucity" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="mei_baseline_trends_top_regions" connection-ref="snowflake"
+                  path-to-sql-file="mei_baseline_trends_top_regions.sql"
+                  path-to-setup-ddl="mei_baseline_trends_top_regions.ddl">
+            <requires>
+                <task ref="mei_baseline_trends_geo_new"/>
+                <!-- remove during backfill-->
+                <task ref="blt_geo_list"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="blt_top_ureg" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="mei_blt_user_city" connection-ref="snowflake"
+                  path-to-sql-file="mei_blt_user_city.sql"
+                  path-to-setup-ddl="mei_blt_user_city.ddl">
+            <requires>
+                <task ref="mei_baseline_trends_geo_new"/>
+                <!-- remove during backfill-->
+                <task ref="blt_geo_list"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="baseline_trends_user_city" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+         <snow-sql id="mei_blt_user_reg" connection-ref="snowflake"
+                  path-to-sql-file="mei_blt_user_reg.sql"
+                  path-to-setup-ddl="mei_blt_user_reg.ddl">
+            <requires>
+                <task ref="mei_baseline_trends_geo_new"/>
+                <!-- remove during backfill-->
+                <task ref="blt_geo_list"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="baseline_trends_uregion" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+
+        <snow-sql id="blt_top_locations_geo" connection-ref="snowflake"
+                  path-to-sql-file="blt_top_locations_geo.sql"
+                  path-to-setup-ddl="blt_top_locations_geo.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="USER_TRACKING" namespace="PUBLIC" name="BLESSED_UNIQUE_USERS" format="ds"/>
+                <task ref="displayads_media_impact_pipeline"/>
+                <task ref = "geo_to_location"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="blt_top_locations_geo" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+
+        <snow-sql id="blt_top_cities_geo" connection-ref="snowflake"
+                  path-to-sql-file="blt_top_cities_geo.sql"
+                  path-to-setup-ddl="blt_top_cities_geo.ddl">
+            <requires>
+                <task ref="blt_top_locations_geo"/>
+                <task ref = "blt_geo_list"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="blt_top_cities_geo" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+
+        <snow-sql id="blt_top_properties_geo" connection-ref="snowflake"
+                  path-to-sql-file="blt_top_properties_geo.sql"
+                  path-to-setup-ddl="blt_top_properties_geo.ddl">
+            <requires>
+                <task ref="blt_top_locations_geo"/>
+                <task ref = "blt_geo_list"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="blt_top_properties_geo" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+
+        <snow-sql id="mei_economic_impact" connection-ref="snowflake"
+                  path-to-sql-file="mei_economic_impact.sql"
+                  path-to-setup-ddl="mei_economic_impact.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="USER_TRACKING" namespace="PUBLIC" name="BLESSED_UNIQUE_USERS" format="ds"/>
+                <task ref="displayads_media_impact_pipeline"/>
+                <task ref = "advertiser_oxford_loc_mapping"/>
+                <!--remove for backfill-->
+                <task ref="dfp_ad_name"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="mei_economic_impact" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="mei_economic_impact_ta_only" connection-ref="snowflake"
+                  path-to-sql-file="mei_economic_impact_ta_only.sql"
+                  path-to-setup-ddl="mei_economic_impact_ta_only.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="USER_TRACKING" namespace="PUBLIC" name="BLESSED_UNIQUE_USERS" format="ds"/>
+                <!-- remove during backfill -->
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="sales"
+                       name="gdoc_advertiser_geo_mapping" format="ds"/>
+                <task ref="dfp_ad_name"/>
+                <task ref="displayads_media_impact_pipeline"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="mei_economic_impact_ta_only" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="oxford_economics_country_mapping" connection-ref="snowflake"
+                  path-to-sql-file="oxford_economics_country_mapping.sql"
+                  path-to-setup-ddl="oxford_economics_country_mapping.ddl">
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="oxford_economics_country_mapping" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="advertiser_oxford_loc_mapping" connection-ref="snowflake"
+                  path-to-sql-file="advertiser_oxford_loc_mapping.sql"
+                  path-to-setup-ddl="advertiser_oxford_loc_mapping.ddl">
+            <requires>
+               <task ref = "oxford_economics_country_mapping"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="advertiser_oxford_loc_mapping" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <!--<snow-sql id="mei_competitive_geo_set" connection-ref="snowflake"
+                  path-to-sql-file="mei_competitive_geo_set.sql"
+                  path-to-setup-ddl="mei_competitive_geo_set.ddl">
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="mei_competitive_geo_set" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="mei_ad_competitive_geo_set" connection-ref="snowflake"
+                  path-to-sql-file="mei_ad_competitive_geo_set.sql"
+                  path-to-setup-ddl="mei_ad_competitive_geo_set.ddl">
+            <requires>
+                <task ref="mei_competitive_geo_set"/>
+                <task ref="dfp_ad_name"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="mei_ad_competitive_geo_set" format="ds"/>
+            </on-success>
+        </snow-sql> -->
+
+        <snow-sql id="mei_competitive_set" connection-ref="snowflake"
+                  path-to-sql-file="mei_competitive_set.sql"
+                  path-to-setup-ddl="mei_competitive_set.ddl">
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="mei_competitive_set" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="geo_to_location" connection-ref="snowflake"
+                  path-to-sql-file="geo_to_location.sql"
+                  path-to-setup-ddl="geo_to_location.ddl">
+           <!-- <requires>
+                 <stamp connection-ref="snowflake" instance="RIO_SF" namespace="display_sales" name="location_hierarchy" format="ds"/>
+            </requires> -->
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="geo_to_location" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="ci_bubble_score" connection-ref="snowflake"
+                  path-to-sql-file="ci_bubble_score.sql"
+                  path-to-setup-ddl="ci_bubble_score.ddl">
+            <requires>
+                <!--  <stamp connection-ref="snowflake" instance="RIO_SF" namespace="hotels_sst" name="t_bubble_score_daily" format="ds"/> -->
+                <task ref="geo_to_location"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="ci_bubble_score" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="ci_comp_bubble_score" connection-ref="snowflake"
+                  path-to-sql-file="ci_comp_bubble_score.sql"
+                  path-to-setup-ddl="ci_comp_bubble_score.ddl">
+            <requires>
+                <task ref="mei_competitive_set"/>
+                <task ref="ci_bubble_score"/>
+                <task ref="dfp_ad_name"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="ci_comp_bubble_score" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+
+
+
+
+        <snow-sql id="ci_daily_comp_metrics" connection-ref="snowflake"
+                  path-to-sql-file="ci_daily_comp_metrics.sql"
+                  path-to-setup-ddl="ci_daily_comp_metrics.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="user_location_attraction_bookings" format="ds"/>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="user_location_hotel_clicks_bookings" format="ds"/>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="user_location_pageviews" format="ds"/>
+                <stamp connection-ref="snowflake" instance="USER_TRACKING" namespace="PUBLIC" name="BLESSED_UNIQUE_USERS" format="ds"/>
+                <task ref="mei_competitive_set"/>
+                <task ref="geo_to_location"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="ci_daily_comp_metrics" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="ci_daily_comp_ratings" connection-ref="snowflake"
+                  path-to-sql-file="ci_daily_comp_ratings.sql"
+                  path-to-setup-ddl="ci_daily_comp_ratings.ddl">
+            <requires>
+                 <!--<stamp connection-ref="leo" namespace="default" name="t_member" format="dsnodashes"> <offset duration="P1D"/> </stamp>
+                 <stamp connection-ref="leo" namespace="default" name="t_userreview" format="dsnodashes"> <offset duration="P1D"/> </stamp>-->
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="public" name="t_userreview" format="ds"/>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="public" name="t_member" format="ds"/>
+                <task ref="geo_to_location"/>
+                <task ref="mei_competitive_set"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="ci_daily_comp_ratings" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="ci_top_city_markets" connection-ref="snowflake"
+                  path-to-sql-file="ci_top_city_markets.sql"
+                  path-to-setup-ddl="ci_top_city_markets.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="cx_analytics" name="ugeo_traffic_bookings_daily" format="ds"/>
+                <task ref="mei_competitive_set"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="ci_top_city_markets" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="ci_top_region_markets" connection-ref="snowflake"
+                  path-to-sql-file="ci_top_region_markets.sql"
+                  path-to-setup-ddl="ci_top_region_markets.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="cx_analytics" name="ugeo_traffic_bookings_daily" format="ds"/>
+                <task ref="mei_competitive_set"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="ci_top_region_markets" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="ci_top_country_markets" connection-ref="snowflake"
+                  path-to-sql-file="ci_top_country_markets.sql"
+                  path-to-setup-ddl="ci_top_country_markets.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="cx_analytics" name="ugeo_traffic_bookings_daily" format="ds"/>
+                <task ref="mei_competitive_set"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="ci_top_country_markets" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="ci_top_markets" connection-ref="snowflake"
+                  path-to-sql-file="ci_top_markets.sql"
+                  path-to-setup-ddl="ci_top_markets.ddl">
+            <requires>
+                <task ref="ci_top_country_markets"/>
+                <task ref="ci_top_region_markets"/>
+                <task ref="ci_top_city_markets"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="ci_top_markets" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="ad_hotel_star_ratings_90d" connection-ref="snowflake"
+                  path-to-sql-file="ad_hotel_star_ratings_90d.sql"
+                  path-to-setup-ddl="ad_hotel_star_ratings_90d.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="user_location_hotel_clicks_bookings" format="ds"/>
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="sales"
+                       name="gdoc_advertiser_geo_mapping" format="ds"/>
+                <task ref="dfp_ad_name"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="ad_hotel_star_ratings_90d" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="booking_distance_adv" connection-ref="snowflake"
+                  path-to-sql-file="booking_distance_adv.sql"
+                  path-to-setup-ddl="booking_distance_adv.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="cx_analytics" name="booking_distance_geo" format="ds"/>
+                <!-- remove during backfill -->
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="sales"
+                       name="gdoc_advertiser_geo_mapping" format="ds"/>
+                <task ref="dfp_ad_name"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="booking_distance_adv" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+
+        <snow-sql id="user_reviews_time" connection-ref="snowflake"
+                  path-to-sql-file="user_reviews_time.sql"
+                  path-to-setup-ddl="user_reviews_time.ddl">
+            <requires>
+                 <!--<stamp connection-ref="leo" namespace="default" name="t_member" format="dsnodashes"> <offset duration="P1D"/> </stamp>
+                 <stamp connection-ref="leo" namespace="default" name="t_userreview" format="dsnodashes"> <offset duration="P1D"/> </stamp>-->
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="public" name="t_userreview" format="ds"/>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="public" name="t_member" format="ds"/>
+                <stamp connection-ref="snowflake" instance="display_ads" namespace="sales"
+                       name="gdoc_advertiser_geo_mapping" format="ds"/>
+                <task ref="dfp_ad_name"/>
+                <task ref="geo_to_location"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="user_reviews_time" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="user_rating_geo" connection-ref="snowflake"
+                  path-to-sql-file="user_rating_geo.sql"
+                  path-to-setup-ddl="user_rating_geo.ddl">
+            <requires>
+                <!-- <stamp connection-ref="leo" namespace="default" name="t_member" format="dsnodashes"> <offset duration="P1D"/> </stamp>
+                 <stamp connection-ref="leo" namespace="default" name="t_userreview" format="dsnodashes"> <offset duration="P1D"/> </stamp>-->
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="public" name="t_userreview" format="ds"/>
+                <stamp connection-ref="snowflake" instance="RIO_SF" namespace="public" name="t_member" format="ds"/>
+                <task ref="geo_to_location"/>
+                <!-- remove during backfill -->
+                <task ref="blt_geo_list"/>
+                <stamp connection-ref="snowflake" instance="rio_sf" namespace="hotels_sst" name="a_geo_details_daily" format="ds"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="sales" name="user_ratings_geo" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="dmo_top_location_pv" connection-ref="snowflake"
+                  path-to-sql-file="dmo_top_location_pv.sql"
+                  path-to-setup-ddl="dmo_top_location_pv.ddl">
+
+        </snow-sql>
+
+        <snow-sql id="dmo_top_location_booking" connection-ref="snowflake"
+                  path-to-sql-file="dmo_top_location_booking.sql"
+                  path-to-setup-ddl="dmo_top_location_booking.ddl">
+
+        </snow-sql>
+
+
+        <email id="final_step">
+            <requires>
+                <task ref="blt_top_cities_geo"/>
+                <task ref="blt_top_properties_geo"/>
+                <task ref="mei_blt_user_city"/>
+                <task ref="mei_blt_user_reg"/>
+                <task ref="mei_baseline_trends_geo_new"/>
+                <task ref="blt_ip_pageviews"/>
+                <task ref="user_rating_geo"/>
+                <task ref="ci_comp_bubble_score"/>
+                <task ref="ci_daily_comp_metrics"/>
+                <task ref="ci_daily_comp_ratings"/>
+                <task ref="ci_top_markets"/>
+                <task ref="booking_distance_adv"/>
+                <task ref="mei_economic_impact"/>
+                <task ref="mei_economic_impact_ta_only"/>
+                <task ref="mei_campaign_agg"/>
+                <task ref="mei_advertiser_spend"/>
+                <task ref="mei_campaign_impressions"/>
+                <task ref="mei_campaign_view_rate"/>
+
+            </requires>
+            <content>
+                <subject>insights_platform_pipeline</subject>
+                <body>Daily run successful - {{CURRENT_DAY}}</body>
+            </content>
+        </email>
+
+    </flow>
+
+</pipe>
