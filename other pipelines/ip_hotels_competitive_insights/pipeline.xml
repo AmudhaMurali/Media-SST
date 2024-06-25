@@ -1,0 +1,258 @@
+
+<pipe xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="https://whampipe.wh.tripadvisor.com/xsds/0.02/" xsi:schemaLocation="https://whampipe.wh.tripadvisor.com/xsds/0.02/ https://whampipe.wh.tripadvisor.com/xsds/0.02/whampipe-0.02.xsd">
+    <declaration>
+        <name>ip_hotels_competitive_insights</name>
+        <group>ta-analytics-dev</group>
+        <description>pipeline for Hotels Insights Platform Competitive Insights dashboards</description>
+        <success-emails>arosenthal@tripadvisor.com,xhou@tripadvisor.com,blackhole@tripadvisor.com</success-emails>
+        <failure-emails>arosenthal@tripadvisor.com,xhou@tripadvisor.com,blackhole@tripadvisor.com</failure-emails>
+        <tags>corex</tags>
+        <schedule-display>daily</schedule-display>
+        <engine-defaults>
+            <spark>
+                <param name="--driver-memory" value="4g"/>
+                <param name="--executor-cores" value="4"/>
+                <param name="--executor-memory " value="12g"/>
+                <conf-param name="spark.shuffle.service.enabled" value="true"/>
+                <conf-param name="spark.sql.orc.impl" value="native"/>
+            </spark>
+        </engine-defaults>
+    </declaration>
+    <connection>
+        <snowflake id="snowflake" database="{{snow_database}}"  role="{{snowflake_role}}" credential="ta-snowflake"/>
+    </connection>
+    <variables>
+        <variable id="snow_database" description="target database to write to on snowflake">
+            <production>display_ads</production>
+            <private>user_scratch</private>
+        </variable>
+        <variable id="pipeline_schema" description="target schema to write to on snowflake">
+            <production>insights_platform_hotels</production>
+            <private>x_{{USER}}</private>
+        </variable>
+        <!--<variable id="hive_pipeline_schema" description="target schema to write to on hive">
+            <production>analytics</production>
+            <private>x_{{USER}}</private>
+        </variable>-->
+        <variable id="snowflake_role" description="the role to use on snowflake">
+            <production>analytics_role</production>
+            <private>analytics_role</private>
+        </variable>
+
+        <date-variable id="start_dt_m1" from="EXECUTION" add="-P1D" format="yyyy-MM-dd" description="1_day_prior"/>
+        <date-variable id="start_dt_m30" from="EXECUTION" add="-P30D" format="yyyy-MM-dd" description="30_day_prior"/>
+        <date-variable id="start_dt_m90" from="EXECUTION" add="-P90D" format="yyyy-MM-dd" description="90_day_prior"/>
+
+
+    </variables>
+
+    <flow>
+
+        <snow-sql id="ip_hotel_comp_set" connection-ref="snowflake"
+                  path-to-sql-file="ip_hotel_comp_set.sql"
+                  path-to-setup-ddl="ip_hotel_comp_set.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="competitive_brand_set_uc" format="ds"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema}}" name="ip_hotel_comp_set" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="ci_hotel_listings" connection-ref="snowflake"
+                  path-to-sql-file="ci_hotel_listings.sql"
+                  path-to-setup-ddl="ci_hotel_listings.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="rio_sf" namespace="hotels_sst" name="a_hotel_details_daily" format="ds"/>
+                <stamp connection-ref="snowflake" instance="rio_sf" namespace="hotels_sst" name="a_location_details_daily" format="ds"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema}}" name="ci_hotel_listings" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="ci_hotel_metrics" connection-ref="snowflake"
+                  path-to-sql-file="ci_hotel_metrics.sql"
+                  path-to-setup-ddl="ci_hotel_metrics.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="user_location_pageviews" format="ds"/>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="user_location_hotel_clicks_bookings" format="ds"/>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="sales" name="user_location_hotel_estimated_bookings" format="ds"/>
+                <stamp connection-ref="snowflake" instance="rio_sf" namespace="hotels_sst" name="a_hotel_details_daily" format="ds"/>
+                <stamp connection-ref="snowflake" instance="rio_sf" namespace="hotels_sst" name="a_location_details_daily" format="ds"/>
+                <stamp connection-ref="snowflake" instance="rio_sf" namespace="rust" name="a_unique_users" format="ds"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema}}" name="ci_hotel_metrics" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="ci_hotel_ratings" connection-ref="snowflake"
+                  path-to-sql-file="ci_hotel_ratings.sql"
+                  path-to-setup-ddl="ci_hotel_ratings.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="rio_sf" namespace="hotels_sst" name="a_hotel_details_daily" format="ds"/>
+                <stamp connection-ref="snowflake" instance="rio_sf" namespace="hotels_sst" name="a_location_details_daily" format="ds"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema}}" name="ci_hotel_ratings" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="ci_hotel_market" connection-ref="snowflake"
+                  path-to-sql-file="ci_hotel_market.sql"
+                  path-to-setup-ddl="ci_hotel_market.ddl">
+            <requires>
+                <stamp connection-ref="snowflake" instance="DISPLAY_ADS" namespace="INSIGHTS_PLATFORM_HOTELS" name="tc_all_location_traffic" format="ds"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema}}" name="ci_hotel_market" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="comp_ci_hotel_ratings" connection-ref="snowflake"
+                  path-to-sql-file="comp_ci_hotel_ratings.sql"
+                  path-to-setup-ddl="comp_ci_hotel_ratings.ddl">
+            <requires>
+                <task ref="ip_hotel_comp_set"/>
+                <task ref="ci_hotel_ratings"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema}}" name="comp_ci_hotel_ratings" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="comp_ci_hotel_listings" connection-ref="snowflake"
+                  path-to-sql-file="comp_ci_hotel_listings.sql"
+                  path-to-setup-ddl="comp_ci_hotel_listings.ddl">
+            <requires>
+                <task ref="ip_hotel_comp_set"/>
+                <task ref="ci_hotel_listings"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema}}" name="comp_ci_hotel_listings" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="comp_ci_hotel_metrics" connection-ref="snowflake"
+                  path-to-sql-file="comp_ci_hotel_metrics.sql"
+                  path-to-setup-ddl="comp_ci_hotel_metrics.ddl">
+            <requires>
+                <task ref="ip_hotel_comp_set"/>
+                <task ref="ci_hotel_metrics"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema}}" name="comp_ci_hotel_metrics" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="comp_ci_hotel_market" connection-ref="snowflake"
+                  path-to-sql-file="comp_ci_hotel_market.sql"
+                  path-to-setup-ddl="comp_ci_hotel_market.ddl">
+            <requires>
+                <task ref="ip_hotel_comp_set"/>
+                <task ref="ci_hotel_market"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema}}" name="comp_ci_hotel_market" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <!--snow-sql id="view_ip_ci" connection-ref="snowflake"
+                  path-to-sql-file="view_ip_ci.sql">
+            <requires>
+                <task ref="comp_ci_hotel_market"/>
+                <task ref="comp_ci_hotel_metrics"/>
+                <task ref="comp_ci_hotel_listings"/>
+                <task ref="comp_ci_hotel_ratings"/>
+            </requires>
+        </snow-sql-->
+
+        <snow-sql id="id_comp_ci_hotel_ratings" connection-ref="snowflake"
+                  path-to-sql-file="id_comp_ci_hotel_ratings.sql"
+                  path-to-setup-ddl="id_comp_ci_hotel_ratings.ddl">
+            <requires>
+                <task ref="ip_hotel_comp_set"/>
+                <task ref="ci_hotel_ratings"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema}}" name="id_comp_ci_hotel_ratings" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="id_comp_ci_hotel_listings" connection-ref="snowflake"
+                  path-to-sql-file="id_comp_ci_hotel_listings.sql"
+                  path-to-setup-ddl="id_comp_ci_hotel_listings.ddl">
+            <requires>
+                <task ref="ip_hotel_comp_set"/>
+                <task ref="ci_hotel_listings"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema}}" name="id_comp_ci_hotel_listings" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="id_comp_ci_hotel_metrics" connection-ref="snowflake"
+                  path-to-sql-file="id_comp_ci_hotel_metrics.sql"
+                  path-to-setup-ddl="id_comp_ci_hotel_metrics.ddl">
+            <requires>
+                <task ref="ip_hotel_comp_set"/>
+                <task ref="ci_hotel_metrics"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema}}" name="id_comp_ci_hotel_metrics" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <snow-sql id="id_comp_ci_hotel_market" connection-ref="snowflake"
+                  path-to-sql-file="id_comp_ci_hotel_market.sql"
+                  path-to-setup-ddl="id_comp_ci_hotel_market.ddl">
+            <requires>
+                <task ref="ip_hotel_comp_set"/>
+                <task ref="ci_hotel_market"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema}}" name="id_comp_ci_hotel_market" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+        <!--snow-sql id="view_ip_idci" connection-ref="snowflake"
+                  path-to-sql-file="view_ip_idci.sql">
+            <requires>
+                <task ref="id_comp_ci_hotel_market"/>
+                <task ref="id_comp_ci_hotel_metrics"/>
+                <task ref="id_comp_ci_hotel_listings"/>
+                <task ref="id_comp_ci_hotel_ratings"/>
+            </requires>
+        </snow-sql-->
+
+        <snow-sql id="ip_competitive" connection-ref="snowflake"
+                  path-to-sql-file="ip_competitive.sql"
+                  path-to-setup-ddl="ip_competitive.ddl">
+            <requires>
+                <task ref="id_comp_ci_hotel_market"/>
+                <task ref="id_comp_ci_hotel_metrics"/>
+                <task ref="id_comp_ci_hotel_listings"/>
+                <task ref="id_comp_ci_hotel_ratings"/>
+            </requires>
+            <on-success>
+                <create-stamp connection-ref="snowflake" namespace="{{pipeline_schema}}" name="ip_competitive" format="ds"/>
+            </on-success>
+        </snow-sql>
+
+
+
+
+        <email id="email_insight_platform_competitive">
+            <requires>
+                <task ref="ip_competitive"/>
+                <task ref="ip_hotel_comp_set"/>
+            </requires>
+            <content>
+                <subject>email_insight_platform_competitive</subject>
+                <body>Daily run successful - {{CURRENT_DAY}}</body>
+            </content>
+        </email>
+
+    </flow>
+</pipe>
