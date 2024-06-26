@@ -1,0 +1,63 @@
+CREATE TABLE IF NOT EXISTS &{pipeline_schema}.mei_economic_impact (
+      ds                          DATE,
+      os_type                     STRING,
+      os_group                    STRING,
+      uniques                     INT,
+      saw_campaign                BOOLEAN,
+      num_saw_campaign            INT,
+      imp_ds                      DATE,
+      daydif                      INT,
+      advertiser_id               INT,
+      advertiser_name             STRING,
+      ad_name_formatted           STRING,
+      advertiser_category         STRING,
+      advertiser_country          STRING,
+      user_country                STRING,
+      user_market                 STRING,
+      traveler_type               STRING,
+      -- Accommodation Bookings --
+      booked_acc                  BOOLEAN,
+      total_acc_bookings          INT,
+      num_acc_booked              INT,
+      total_nights_booked         INT,
+      avg_nightly_booking_rate    INT,
+      avg_num_booking_guests      INT,
+      avg_num_booking_rooms       INT,
+      avg_nights_per_booking      INT,
+      -- Accommodation Clicks (Meta and IB) --
+      num_acc_clicks              INT,
+      avg_nightly_click_rate      DOUBLE,
+      avg_num_click_guests        DOUBLE,
+      avg_num_click_rooms         DOUBLE,
+      -- Attractions Bookings --
+      booked_attr                 BOOLEAN,
+      attr_bookings               INT,
+      avg_attr_spend              DOUBLE,
+      avg_attr_guests             INT,
+      -- Oxford Economics --
+      t_acc                       DOUBLE,
+      t_food                      DOUBLE,
+      t_transport                 DOUBLE,
+      t_retail                    DOUBLE,
+      t_rec                       DOUBLE,
+      t_other                     DOUBLE,
+      t_total                     DOUBLE,
+      d_acc                       DOUBLE,
+      d_food                      DOUBLE,
+      d_transport                 DOUBLE,
+      d_retail                    DOUBLE,
+      d_rec                       DOUBLE,
+      d_other                     DOUBLE,
+      d_total                     DOUBLE,
+      f_acc                       DOUBLE,
+      f_food                      DOUBLE,
+      f_transport                 DOUBLE,
+      f_retail                    DOUBLE,
+      f_rec                       DOUBLE,
+      f_other                     DOUBLE,
+      f_total                     DOUBLE
+);
+
+
+GRANT OWNERSHIP ON TABLE &{pipeline_schema}.mei_economic_impact TO ROLE cx_analytics_role REVOKE CURRENT GRANTS;
+GRANT SELECT ON &{pipeline_schema}.mei_economic_impact TO PUBLIC;

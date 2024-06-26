@@ -1,0 +1,37 @@
+CREATE TABLE IF NOT EXISTS &{pipeline_schema}.ci_daily_comp_bookings (
+         ds                         DATE,
+         advertiser_id              INT,
+         advertiser_name            STRING,
+         ad_name_formatted          STRING,
+         ad_geo_id                  INT,
+         ad_geo_name                STRING,
+         ag_unique_bookers          INT,
+         ag_acc_bookers             INT,
+         ag_attr_bookers            INT,
+         ag_bookers_both            INT,
+         ag_acc_bookings            INT,
+         ag_acc_nights_booked       INT,
+         ag_nights_per_booking      DOUBLE,
+         ag_rooms_per_booking       DOUBLE,
+         ag_acc_w_avg_spend         DOUBLE,
+         ag_acc_avg_booking_window  DOUBLE,
+         ag_attr_bookings           INT,
+         ag_attr_w_avg_spend        DOUBLE,
+         ag_attr_avg_booking_window DOUBLE,
+         cs_unique_bookers          INT,
+         cs_acc_bookers             INT,
+         cs_attr_bookers            INT,
+         cs_bookers_both            INT,
+         cs_acc_bookings            INT,
+         cs_acc_nights_booked       INT,
+         cs_nights_per_booking      DOUBLE,
+         cs_rooms_per_booking       DOUBLE,
+         cs_acc_w_avg_spend         DOUBLE,
+         cs_acc_avg_booking_window  DOUBLE,
+         cs_attr_bookings           INT,
+         cs_attr_w_avg_spend        DOUBLE,
+         cs_attr_avg_booking_window DOUBLE
+);
+
+GRANT OWNERSHIP ON TABLE &{pipeline_schema}.ci_daily_comp_bookings TO ROLE cx_analytics_role REVOKE CURRENT GRANTS;
+GRANT SELECT ON &{pipeline_schema}.ci_daily_comp_bookings TO PUBLIC;
